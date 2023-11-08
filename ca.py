@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # coding=utf-8
-# @Filename :ca.py.py
+# @Filename :ca.py
 # @Time     :2023/7/16 下午4:06
 # Author    :Luo Tong
 import os
@@ -20,7 +20,7 @@ sys.path.append(
 import p4runtime_lib.bmv2
 import p4runtime_lib.helper
 
-TIME_STEPS = 10
+TIME_STEPS = 100
 NUMBER_OF_SWITCH = 8
 host_IPs = ['10.0.1.0', '10.0.2.0', '10.0.3.0', '10.0.4.0',
             '10.0.5.0', '10.0.6.0', '10.0.7.0', '10.0.8.0', ]
@@ -188,7 +188,7 @@ def main():
         if len(s2h_10steps) >= TIME_STEPS:
             best_rt, _, _ = yq.ant_colony_optimization(s2h, cur_route_table, yq.pheromone.copy(), yq.probabilities.copy())
             # 必须给pheromone和probabilities.copy()加上.copy()，不然就进去把这两个变量给改，而每一个时隙都需要使用他俩
-            print_matrix("计算出的路由表", best_rt)  # 打印s2h矩阵, 最后一位才是最新的s2h流量矩阵
+            print_matrix("计算出的路由表", best_rt)
             modifyRT(p4info_helper, switches, route_table_before=cur_route_table, route_table_after=best_rt)
             cur_route_table = best_rt
             print("改流表之后MLU = ", yq.get_MLU(s2h, cur_route_table))

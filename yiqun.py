@@ -64,7 +64,7 @@ num_switches = 8
 num_hosts = 8
 num_traffic = num_switches * num_hosts  # 总共的流的数量
 
-NUM_ITERATIONS = 30
+NUM_ITERATIONS = 20
 NUM_ANTS = 10    # num_traffic * 1    # 蚂蚁的数量，每轮派出 num_ants 只蚂蚁，即查找树的第一层宽度为num_ants
 MAX_STEP = 5
 
@@ -98,6 +98,7 @@ probabilities = pheromone.copy()  # 概率最开始和信息素是一样的
 
 pheromone = pheromone.astype(np.float32)
 probabilities = probabilities.astype(np.float32)
+
 # 定义蚁群算法的主函数
 def ant_colony_optimization(s2h, next_switch_table, pheromone, probabilities):
     # 使用概率probabilities进行随机选择的时候需要使用 probabilities.flatten() 拉成一维
@@ -106,7 +107,8 @@ def ant_colony_optimization(s2h, next_switch_table, pheromone, probabilities):
     best_probabilities = probabilities.copy()
     best_fitness = 0    # 记录最大的适应度
     num = 1
-    s2s_matrix = cal_s2s_matrix(s2h, next_switch_table)    # 一直在被更新计算的s2s
+    s2s_matrix_0 = cal_s2s_matrix(s2h, next_switch_table)
+    b = 0
     for iter in range(NUM_ITERATIONS):
         # 记录某个位置上的概率有没有被选过
         fitness_list = []   # 适应度的列表，用来计算更新信息素
@@ -115,6 +117,7 @@ def ant_colony_optimization(s2h, next_switch_table, pheromone, probabilities):
         p0 = probabilities.copy()
         for i in range(NUM_ANTS):
             route_table = next_switch_table.copy()  # 一直在被计算被更新的路由表
+            s2s_matrix = s2s_matrix_0.copy()
             # 一只蚂蚁的操作 ，根据信息素计算概率
             count = 0   # count 表示每只蚂蚁走的距离，使用MAX_STEP 进行限制
             p_hat = p0.copy()    # p_hat 用来在计算中使被选中的概率置为0，这样减少了重复选择的次数
@@ -129,6 +132,7 @@ def ant_colony_optimization(s2h, next_switch_table, pheromone, probabilities):
                 '''
                 hop = cal_hop(src_sw, dst_host, next_sw, route_table)
                 if hop == -1:
+                    b += 1
                     # 形成环路的策略只是对此时来说不能选，但是之后的其他策略可能使得该策略不会再成环，所以不能把此策略的概率置为0
                     continue    # 所以直接重新选一个就行
 
@@ -151,6 +155,7 @@ def ant_colony_optimization(s2h, next_switch_table, pheromone, probabilities):
                     best_probabilities = p_hat.copy()
                 count += 1
         update_pheromone(solution_list, fitness_list, pheromone)
+    print(b)
     return best_rt, best_fitness, best_probabilities
 
 # 根据s2h矩阵算出 s2s 以供之后算链路利用率和适应度
@@ -245,7 +250,7 @@ def trim_origin_rt(p_hat, next_switch_table):
 if __name__ == "__main__":
     startTime = time.perf_counter()
     best_rt, best_fitness, best_probabilities = ant_colony_optimization(s2h_test, next_switch_table_test, pheromone.copy(), probabilities.copy())
-
+    # print(best_rt, best_fitness, best_probabilities )
 
     # 根据best_solution 修改路由表
     # 执行代码
