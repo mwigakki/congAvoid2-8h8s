@@ -3,7 +3,7 @@
 #include <v1model.p4>
 
 const bit<16> TYPE_IPV4 = 0x800;
-
+#define LENGTH 50000 //寄存器位数，保证存够100s数据
 
 /*************************************************************************
 *********************** H E A D E R S  ***********************************
@@ -87,6 +87,10 @@ control MyVerifyChecksum(inout headers hdr, inout metadata meta) {
 control MyIngress(inout headers hdr,
                   inout metadata meta,
                   inout standard_metadata_t standard_metadata) {
+    // 先试试 10000个空间
+    register<bit<32>>(2) reg_idx_and_cnt; 
+    register<bit<48>>(LENGTH) reg_ingress_global_timestamp; 
+    register<bit<48>>(LENGTH) reg_egress_global_timestamp;  
 
     counter(8, CounterType.packets) pkt_counter;    // define a packets counter with 8 size;
     // register <bit<32>>(8) pkt_counter;			// register<T>
@@ -123,6 +127,24 @@ control MyIngress(inout headers hdr,
             pkt_counter.count(idx);
 
             ipv4_lpm.apply();
+
+            bit<32> idx1;//字节数
+            bit<32> cnt;//新的字节数
+            reg_idx_and_cnt.read(idx1, 0);
+            reg_idx_and_cnt.read(cnt, 1);
+            if (cnt == 0){
+                reg_ingress_global_timestamp.write(idx1, standard_metadata.ingress_global_timestamp);
+                reg_egress_global_timestamp.write(idx1, standard_metadata.egress_global_timestamp);
+                idx1 = idx1 + 1;
+                cnt = cnt + 1;
+                reg_idx_and_cnt.write(0, idx1);
+                reg_idx_and_cnt.write(1, cnt);
+            } else if (cnt == 10){
+                reg_idx_and_cnt.write(1, 0); // 在第 1 个位置 cnt 上写上0
+            } else {
+                cnt = cnt + 1;
+                reg_idx_and_cnt.write(1, cnt);
+            }
         }
     }
 }
@@ -134,9 +156,36 @@ control MyIngress(inout headers hdr,
 control MyEgress(inout headers hdr,
                  inout metadata meta,
                  inout standard_metadata_t standard_metadata) {
-    apply {  }
-}
+    register<bit<32>>(2) reg_idx_and_cnt; 
+    
+// register_read reg_deq_qdepth
+    register<bit<32>>(LENGTH) reg_enq_timestamp;    
+    register<bit<19>>(LENGTH) reg_enq_qdepth;     
+    register<bit<32>>(LENGTH) reg_deq_timedelta;     
+    register<bit<19>>(LENGTH) reg_deq_qdepth;   
 
+    apply { 
+        bit<32> idx;//字节数
+        bit<32> cnt;//新的字节数
+        reg_idx_and_cnt.read(idx, 0);
+        reg_idx_and_cnt.read(cnt, 1);
+        if (cnt == 0){
+            reg_enq_timestamp.write(idx, standard_metadata.enq_timestamp);  // (bit<32>)
+            reg_enq_qdepth.write(idx, standard_metadata.enq_qdepth);
+            reg_deq_timedelta.write(idx, standard_metadata.deq_timedelta);
+            reg_deq_qdepth.write(idx, standard_metadata.deq_qdepth);
+            idx = idx + 1;
+            cnt = cnt + 1;
+            reg_idx_and_cnt.write(0, idx);
+            reg_idx_and_cnt.write(1, cnt);
+        } else if (cnt == 10){
+            reg_idx_and_cnt.write(1, 0); // 在第 1 个位置 cnt 上写上0
+        } else {
+            cnt = cnt + 1;
+            reg_idx_and_cnt.write(1, cnt);
+        }
+    }
+}
 /*************************************************************************
 *************   C H E C K S U M    C O M P U T A T I O N   **************
 *************************************************************************/

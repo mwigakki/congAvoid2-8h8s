@@ -1,16 +1,20 @@
 #!/usr/bin/env python
 # coding=utf-8
-# @Filename :ca.py
-# @Time     :2023/7/16 下午4:06
-# Author    :Luo Tong
 import os
 import sys
 import time
-import grpc
 import yiqun as yq
+import grpc
+import argparse
+import copy
+import datetime
 
-sys.path.append("/usr/local/lib/python3.6/site-packages")
-# 引入原始p4模块
+# sys.path.append("/usr/local/lib/python3.8/dist-packages")
+'''
+我将162系统自带的python的google.rpc直接拷到pytorch虚拟环境下，
+再将虚拟机里面的p4模块拷到pytorch虚拟环境下，
+再安装一个google.protobuf模块，就可以直接运行而不需要再添加上面的额外环境了。 在`~/anaconda3/envs/pytorch/lib/python3.7/site-packages`里
+'''
 from p4.v1 import p4runtime_pb2
 from p4.v1 import p4runtime_pb2_grpc
 
@@ -20,7 +24,13 @@ sys.path.append(
 import p4runtime_lib.bmv2
 import p4runtime_lib.helper
 
-TIME_STEPS = 100
+import numpy as np
+import scipy.sparse as sp
+import torch
+import torch.nn as nn 
+from torch import optim
+
+TIME_STEPS = 10
 NUMBER_OF_SWITCH = 8
 host_IPs = ['10.0.1.0', '10.0.2.0', '10.0.3.0', '10.0.4.0',
             '10.0.5.0', '10.0.6.0', '10.0.7.0', '10.0.8.0', ]
@@ -29,7 +39,11 @@ host_macs = ['08:00:00:00:01:01', '08:00:00:00:02:02',
              '08:00:00:00:03:03', '08:00:00:00:04:04',
              '08:00:00:00:05:05', '08:00:00:00:06:06',
              '08:00:00:00:07:07', '08:00:00:00:08:08', ]
-# ports[i][j] 表示 交换机si到sj的出端口
+# log min max 归一化的参数
+normalize_min_value = 0
+normalize_max_value = 15  # e的15次方大概是3,270,000
+
+# ports[i][j] 表示 交换机si到sj的出端口，对角线是到对应终端的
 ports = [
     [3, 0, 1, 0, 0, 0, 0, 4],
     [0, 1, 0, 3, 4, 0, 5, 0],
@@ -135,6 +149,29 @@ def get_counter_value(switchs, client_stubs, p4info_helper, counter_name):
                 # print("%s %s: %d packets (%d bytes)" % (switchs[i].name, counter_name, counter.data.packet_count, counter.data.byte_count))
     return counter_value
 
+def normalize(mx):
+    # 该归一化方法是 每个数 除以 所在行的行和 [[1,1], [1,3]] -> [[0.5,0.5],[0.25,0.75]]
+    rowsum = mx.sum(1).astype(np.float64)  
+    r_inv = np.power(rowsum, -1).flatten()  # 尽量不要让数据有0，不然报运行时警告
+    r_inv[np.isinf(r_inv)] = 0. # 在计算倒数的时候存在一个问题，如果原来的值为0，则其倒数为无穷大，因此需要对r_inv中无穷大的值进行修正，更改为0
+    r_mat_inv = sp.diags(r_inv)
+    mx = r_mat_inv.dot(mx)
+    return mx
+
+# 给蚁群算法实验用的归一化方法
+# 用此方法就必须要保证data的最小值为1 
+def log_min_max_normalize3(data):
+    data = np.log(data) # np.log以e为底数
+    # min-max 归一化 normalize_min_value = 0， normalize_max_value = 15
+    data = (data - normalize_min_value) / (normalize_max_value - normalize_min_value)
+    return data
+
+def denormalize(data_tensor):
+    data = data_tensor.numpy()  # 直接 .numpy创建其实是共享内存的。
+    data = data * (normalize_max_value - normalize_min_value) + normalize_min_value
+    data = np.exp(data)
+    return data.tolist()
+
 # 打印矩阵的帮助函数
 def print_matrix(matrix_name, matrix):
     print("打印矩阵：", matrix_name)
@@ -143,6 +180,11 @@ def print_matrix(matrix_name, matrix):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="use congestion avoidance or not")
+    parser.add_argument("-c", "--ca",action="store_true", help="open avoidance or not") # 默认是 not
+    parser.add_argument("-l", "--learn",action="store_true", help="open learning or not") # 默认是not
+    parser_args = parser.parse_args()
+
     count = 1
     cur_route_table = next_switch_table  # 当前流表
     # s2h_10steps 保存前10次的s2h流量矩阵，单位是Byte/s
@@ -157,7 +199,7 @@ def main():
         switch = p4runtime_lib.bmv2.Bmv2SwitchConnection(
             name='s%d' % (i+1),
             address='127.0.0.1:5005%d' % (i+1),
-            device_id=i,)
+            device_id=i)
         # proto_dump_file='logs/s1-p4runtime-requests.txt' 这个参数就不写了，不然每次修改流表就多一条记录，后期就太长了
         switch.MasterArbitrationUpdate()  # 向交换机发送主控握手请求,设置当前控制平面为主控平面。
         # 设置接管P4流水线以及所有转发条目
@@ -171,8 +213,34 @@ def main():
 
     # 安装初始流表
     installRT(p4info_helper, switches, next_switch_table)
-
-    while True:
+    
+    if parser_args.ca:
+    # 载入深度学习模块
+        net = torch.load("./predict/TCN1.pt")   # 使用临时的模型训练试试 
+        if parser_args.learn:
+            print("开启在线学习...")
+            net.train() # 开启训练模式
+        else:
+            net.eval()
+        # 把170上训练好的模块发送到162上，下面的语句在170上执行
+        # scp /home/sinet/lt/predict/TCN1.py sinet@192.168.199.162:/home/sinet/p4/tutorials/exercises/congAvoid2-8h8s/predict/
+        loss_func = nn.MSELoss()    # 均方误差 是预测值与真实值之差的平方和的平均值
+        lr = 0.00001
+        weight_decay = 5e-4
+        optimizer = optim.Adam(params=[param for model in net.tcn_models for param in model.parameters()], lr=lr, weight_decay=weight_decay)
+        # optimizer = optim.Adam(net.parameters(), lr=lr, weight_decay=weight_decay)
+        
+        best_rt_list, best_fit_list, best_pro_list = [], [], []
+        model_file = "predict/TCN1.pt"
+        last_predict_output = None
+    
+    # 新建进程去放流量
+    print("开始重放流量...（如果之前重放未结束就会自动关闭重开）")
+    flow_inject = "bash traffic_inject.sh"    # 在0045后加上-t 参数可以加快重放（尽可能快）
+    os.system(flow_inject)
+    time.sleep(1)
+    cnt = 20  #只运行了100s，获取了100s的数据
+    while cnt: 
         start_time = time.perf_counter()  # 计算程序用时的变量，以微秒为单位
 
         # 查询8个交换机的计数器
@@ -185,9 +253,30 @@ def main():
         print("***************** 第%d次 ****************" % count)
         print_matrix("流量矩阵s2h", s2h)  # 打印s2h矩阵, 最后一位才是最新的s2h流量矩阵
         print("改流表之前MLU = ", yq.get_MLU(s2h, cur_route_table))
-        if len(s2h_10steps) >= TIME_STEPS:
-            best_rt, _, _ = yq.ant_colony_optimization(s2h, cur_route_table, yq.pheromone.copy(), yq.probabilities.copy())
-            # 必须给pheromone和probabilities.copy()加上.copy()，不然就进去把这两个变量给改，而每一个时隙都需要使用他俩
+        if parser_args.ca and len(s2h_10steps) >= TIME_STEPS:
+            data_arr = np.array(s2h_10steps).reshape(-1 ,len(s2h_10steps[0])) # 改变形状以使能用normalize 进行归一化
+            data_arr = log_min_max_normalize3(data_arr).reshape(10 ,len(s2h_10steps[0]), -1)
+            data_tensor = torch.tensor(data_arr).unsqueeze(0).float()    # 在最前面增加一维  data_tensor 的寸尺 1*10*8*8
+            
+            if parser_args.learn:   # 开启了在线学习
+                optimizer.zero_grad()
+                if last_predict_output is not None:     
+                    label = data_tensor[0][-1]
+                    loss = loss_func(label, last_predict_output)
+                    loss.backward()
+                    optimizer.step()
+                
+            predict_output = net(data_tensor, 0)[0]  # 得到预测结果  1*8*8 
+            last_predict_output = predict_output.clone()    # 保存此轮的预测结果供下一轮训练更新模型
+            # print(predict_output)
+            # 关于clone()和 detach()，请看 https://blog.csdn.net/winycg/article/details/100813519
+            s2h_predicted = denormalize(predict_output.clone().detach())# 去归一化，传进去克隆出的（新开辟了内存，因为需要detach）
+            
+            best_rt, best_fit, best_pro = yq.ant_colony_optimization(s2h_predicted, cur_route_table, copy.deepcopy(yq.pheromone), copy.deepcopy(yq.probabilities))
+            # 必须要传入克隆的pheromone和probabilities，不然就进去把这两个变量给改了，而每一个时隙都需要使用原始的他俩
+            best_rt_list.append(copy.deepcopy(best_rt)) # 对于多维list，必须用深拷贝
+            best_fit_list.append(best_fit)
+            best_pro_list.append(copy.deepcopy(best_pro))
             print_matrix("计算出的路由表", best_rt)
             modifyRT(p4info_helper, switches, route_table_before=cur_route_table, route_table_after=best_rt)
             cur_route_table = best_rt
@@ -197,7 +286,32 @@ def main():
         run_time = end_time - start_time
         print('第%d次，耗时： %f ms \n' % (count, run_time * 1000))
         count += 1
-        time.sleep(2)
+        time.sleep(1-run_time)
+        cnt -= 1
+    stop_inject = "bash stop_inject.sh"    
+    os.system(stop_inject)
+    cur_date_time = datetime.datetime.now().strftime('%Y-%m-%d_%H:%M:%S')
+    if parser_args.ca:
+        with open('./output/best_rt_list_%s.txt'%cur_date_time, 'w') as file:
+            for best_rt in best_rt_list:
+                #for row in best_rt:
+                file.write(str(best_rt))
+                file.write('\n')
+        with open('./output/best_fit_list_%s.txt'%cur_date_time, 'w') as file:
+            file.write(str(best_fit_list))    
+        with open('./output/best_pro_list_%s.txt'%cur_date_time, 'w') as file:
+            for best_pro in best_pro_list:  # best_pro 是三维的， 由 sihjsk 组成
+                best_pro = best_pro.tolist()
+                for si in best_pro:   
+                    for hj in si:
+                        file.write(str(hj))
+                        file.write('\n')
+                    file.write('\n')
+                file.write('\n')
+                file.write('\n')
+        if parser_args.learn:   # 开启了在线学习，最后再把学习到的参数保存到文件
+            print("保存本次运行学习到的模型参数...")
+            torch.save(net, model_file) # 保存模型
 
 if __name__ == "__main__":
     main()

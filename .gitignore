@@ -26,6 +26,12 @@ logs/
 # dataset folders
 dataset/
 
+# output folders
+output/
+
+# pcaps folders
+pcaps/
+
 # Vagrant
 .vagrant/
 

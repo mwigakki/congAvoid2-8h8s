@@ -2,7 +2,7 @@
 import time
 import os
 import sys
-sys.path.append("/usr/local/lib/python3.6/site-packages")
+sys.path.append("/usr/local/lib/python3.8/site-packages")
 sys.path.append(
     os.path.join(os.path.dirname(os.path.abspath(__file__)),
                  '../../utils/'))

@@ -108,7 +108,6 @@ def ant_colony_optimization(s2h, next_switch_table, pheromone, probabilities):
     best_fitness = 0    # 记录最大的适应度
     num = 1
     s2s_matrix_0 = cal_s2s_matrix(s2h, next_switch_table)
-    b = 0
     for iter in range(NUM_ITERATIONS):
         # 记录某个位置上的概率有没有被选过
         fitness_list = []   # 适应度的列表，用来计算更新信息素
@@ -132,7 +131,6 @@ def ant_colony_optimization(s2h, next_switch_table, pheromone, probabilities):
                 '''
                 hop = cal_hop(src_sw, dst_host, next_sw, route_table)
                 if hop == -1:
-                    b += 1
                     # 形成环路的策略只是对此时来说不能选，但是之后的其他策略可能使得该策略不会再成环，所以不能把此策略的概率置为0
                     continue    # 所以直接重新选一个就行
 
@@ -155,7 +153,6 @@ def ant_colony_optimization(s2h, next_switch_table, pheromone, probabilities):
                     best_probabilities = p_hat.copy()
                 count += 1
         update_pheromone(solution_list, fitness_list, pheromone)
-    print(b)
     return best_rt, best_fitness, best_probabilities
 
 # 根据s2h矩阵算出 s2s 以供之后算链路利用率和适应度
